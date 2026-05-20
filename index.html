@@ -594,26 +594,19 @@ function parseCsv(text, label) {
 // ─── ACQSC register normalisation ────────────────────────────────────────────
 
 function normaliseAcqscRow(row) {
-  const keys = Object.keys(row);
-  function pick(...candidates) {
-    for (const c of candidates) {
-      const ex = keys.find(k => k.toLowerCase() === c.toLowerCase());
-      if (ex) return (row[ex] || '').trim();
-    }
-    for (const c of candidates) {
-      const pt = keys.find(k => k.toLowerCase().includes(c.toLowerCase()));
-      if (pt) return (row[pt] || '').trim();
-    }
-    return '';
-  }
+  const v = k => (row[k] || '').trim();
+  const first  = v('First name');
+  const middle = v('Middle Name');
+  const last   = v('Surname');
+  const nameParts = [first, middle, last].filter(Boolean);
   return {
-    name:      pick('name', 'full name', "individual's name", 'individual name', 'person'),
-    suburb:    pick('suburb', 'city', 'town', 'locality'),
-    state:     pick('state/territory', 'state', 'territory'),
-    postcode:  pick('postcode', 'post code', 'postal code', 'zip'),
-    orderDate: pick('order date', 'date of order', 'date made', 'banning date', 'date'),
-    orderType: pick('order type', 'type of order', 'ban type', 'duration', 'type'),
-    reason:    pick('reason', 'grounds', 'basis', 'detail', 'condition', 'description')
+    name:      nameParts.join(' '),
+    suburb:    v('Suburb'),
+    state:     v('State'),
+    postcode:  v('Postcode'),
+    orderDate: v('Ban Start Date'),
+    orderType: v('Status'),
+    reason:    v('Description')
   };
 }
 
