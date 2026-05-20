@@ -16,83 +16,72 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify API key secret is configured
+        env:
+          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::Repository secret SCRAPINGBEE_API_KEY is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
       - name: Fetch ACQSC Aged Care register
         id: acqsc
         continue-on-error: true
+        env:
+          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
-          python3 << 'PYEOF'
-          import urllib.request, urllib.parse, sys
+          URL="https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
+          ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
 
-          url = "https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
-          enc = urllib.parse.quote(url, safe='')
+          HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
+            -o aged-care-register.csv \
+            "https://app.scrapingbee.com/api/v1/?api_key=${KEY}&url=${ENC}&premium_proxy=true&country_code=au")
 
-          attempts = [
-              ("direct",        url),
-              ("allorigins",    f"https://api.allorigins.win/raw?url={enc}"),
-              ("corsproxy.io",  f"https://corsproxy.io/?{enc}"),
-              ("codetabs",      f"https://api.codetabs.com/v1/proxy?quest={enc}"),
-          ]
+          echo "ScrapingBee HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::ScrapingBee returned HTTP $HTTP_CODE for ACQSC"
+            echo "--- Response preview ---"
+            head -c 800 aged-care-register.csv
+            exit 1
+          fi
 
-          for name, fetch_url in attempts:
-              print(f"Trying {name}...")
-              try:
-                  req = urllib.request.Request(fetch_url, headers={
-                      "User-Agent": "Mozilla/5.0 (compatible; register-updater/1.0)"
-                  })
-                  with urllib.request.urlopen(req, timeout=45) as resp:
-                      data = resp.read()
-                  lines = data.count(b"\n")
-                  if lines >= 4:
-                      with open("aged-care-register.csv", "wb") as f:
-                          f.write(data)
-                      print(f"OK via {name}: {lines} lines")
-                      sys.exit(0)
-                  print(f"{name} returned only {lines} lines — skipping")
-              except Exception as e:
-                  print(f"{name} failed: {e}")
-
-          print("All attempts failed for ACQSC register", file=sys.stderr)
-          sys.exit(1)
-          PYEOF
+          LINES=$(wc -l < aged-care-register.csv)
+          echo "ACQSC CSV: $LINES lines"
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::ACQSC CSV looks invalid ($LINES lines)"
+            head -c 800 aged-care-register.csv
+            exit 1
+          fi
 
       - name: Fetch NDIS Commission register
         id: ndis
         continue-on-error: true
+        env:
+          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
-          python3 << 'PYEOF'
-          import urllib.request, urllib.parse, sys
+          URL="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
+          ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
 
-          url = "https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
-          enc = urllib.parse.quote(url, safe='')
+          HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
+            -o ndis-register.csv \
+            "https://app.scrapingbee.com/api/v1/?api_key=${KEY}&url=${ENC}&premium_proxy=true&country_code=au")
 
-          attempts = [
-              ("direct",        url),
-              ("allorigins",    f"https://api.allorigins.win/raw?url={enc}"),
-              ("corsproxy.io",  f"https://corsproxy.io/?{enc}"),
-              ("codetabs",      f"https://api.codetabs.com/v1/proxy?quest={enc}"),
-          ]
+          echo "ScrapingBee HTTP: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::ScrapingBee returned HTTP $HTTP_CODE for NDIS"
+            echo "--- Response preview ---"
+            head -c 800 ndis-register.csv
+            exit 1
+          fi
 
-          for name, fetch_url in attempts:
-              print(f"Trying {name}...")
-              try:
-                  req = urllib.request.Request(fetch_url, headers={
-                      "User-Agent": "Mozilla/5.0 (compatible; register-updater/1.0)"
-                  })
-                  with urllib.request.urlopen(req, timeout=45) as resp:
-                      data = resp.read()
-                  lines = data.count(b"\n")
-                  if lines >= 4:
-                      with open("ndis-register.csv", "wb") as f:
-                          f.write(data)
-                      print(f"OK via {name}: {lines} lines")
-                      sys.exit(0)
-                  print(f"{name} returned only {lines} lines — skipping")
-              except Exception as e:
-                  print(f"{name} failed: {e}")
-
-          print("All attempts failed for NDIS register", file=sys.stderr)
-          sys.exit(1)
-          PYEOF
+          LINES=$(wc -l < ndis-register.csv)
+          echo "NDIS CSV: $LINES lines"
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::NDIS CSV looks invalid ($LINES lines)"
+            head -c 800 ndis-register.csv
+            exit 1
+          fi
 
       - name: Commit updated CSVs
         run: |
