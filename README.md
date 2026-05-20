@@ -14,7 +14,7 @@ A browser-based compliance tool for Dovida's People & Culture team. Checks emplo
 
 ## How to use it
 
-1. Go to **https://gotaidea.github.io/bancheck/**
+1. Go to **https://dovida-stuff.github.io/bancheck/**
 2. Upload your employee CSV or Excel file
 3. Click **Run Check**
 4. Review flagged results and download/email the report
