@@ -3,21 +3,20 @@
   Aged Care & NDIS Banning Register Checker
   ==========================================
   Purpose  : Browser-based compliance tool for Dovida's People Team.
-             Checks employee names against two live Australian registers:
+             Checks employee names against two Australian banning registers:
                1. ACQSC Aged Care Banning Register
                2. NDIS Quality & Safeguards Commission Banning Register
-  Registers:
-    ACQSC: https://www.agedcarequality.gov.au/media/94137
-    NDIS : https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv
-  Proxy  : Direct browser fetch is CORS-blocked; requests route through
-           https://api.allorigins.win/raw?url=
-  Update : Change ACQSC_URL or NDIS_URL in the <script> block below.
+  Registers: Stored as static CSVs in this repo, updated monthly by GitHub Actions.
+    aged-care-register.csv  — ACQSC banning orders
+    ndis-register.csv       — NDIS Commission banning orders
+  Update : Registers are refreshed automatically on the 1st of each month.
+           To update immediately, run the "Update Banning Register CSVs" workflow manually.
   Security:
-    - CSP restricts scripts to self + cdnjs, connections to proxy + register
-      domains only, eval blocked, framing blocked
+    - CSP restricts scripts to self + cdnjs, connections to same-origin only,
+      eval blocked, framing blocked
     - No employee data written to localStorage, sessionStorage, URL, or console
     - All in-memory data cleared on page unload
-  Deploy : Upload this single file to GitHub Pages — no build step needed.
+  Deploy : GitHub Pages serves this file and the CSV files from the repo root.
 -->
 <html lang="en">
 <head>
@@ -26,7 +25,7 @@
   <!-- CSP: scripts to self + cdnjs only, no eval, connect to proxy/registers only, no framing -->
   <!-- Note: frame-ancestors only works via HTTP header, not meta tag; include for intent -->
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; connect-src https://api.allorigins.win https://corsproxy.io https://api.codetabs.com https://www.agedcarequality.gov.au https://www.ndiscommission.gov.au; img-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'self'">
+    content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'self'">
   <title>Banning Register Checker — Dovida</title>
   <!-- SRI hashes verify file integrity; crossorigin required for SRI to apply -->
   <script
@@ -220,6 +219,16 @@
     .ci-name { font-weight: 600; }
     .ci-loc  { font-size: 0.78rem; color: var(--grey-dark); margin-top: 1px; }
 
+    /* ── Register dates ─────────────────────────────────────── */
+    .register-dates {
+      font-size: 0.82rem;
+      color: var(--grey-dark);
+      background: var(--grey);
+      border-radius: var(--radius);
+      padding: 8px 13px;
+      margin-bottom: 14px;
+    }
+
     /* ── Disclaimer ──────────────────────────────────────────── */
     .disclaimer {
       background: var(--warn-bg);
@@ -292,10 +301,11 @@
   <div class="card">
     <div class="step-label">Step 2</div>
     <h2>Run Compliance Check</h2>
-    <p style="font-size:.88rem;color:var(--grey-dark);margin-bottom:16px">
-      Fetches both the ACQSC Aged Care Register and NDIS Commission Register live,
-      then checks each employee name against both. No employee data leaves your browser.
+    <p style="font-size:.88rem;color:var(--grey-dark);margin-bottom:12px">
+      Checks employee names against locally cached register data.
+      Registers are updated automatically each month via GitHub Actions.
     </p>
+    <div class="register-dates" id="registerDates">Register data last updated: loading…</div>
     <button class="btn btn-primary" id="runBtn" disabled>Run Check</button>
     <div class="status-msg" id="statusMsg"></div>
   </div>
@@ -338,16 +348,8 @@
 
 <script>
 // ─── Configuration ────────────────────────────────────────────────────────────
-const ACQSC_DISCOVERY = 'https://www.agedcarequality.gov.au/providers/compliance-enforcement/banning-orders';
-const NDIS_DISCOVERY  = 'https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search';
-
-// Proxy fallback chain — tried in order until one succeeds
-const PROXIES = [
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
-];
-const PROXY_NAMES = ['allorigins.win', 'corsproxy.io', 'codetabs.com'];
+const ACQSC_CSV = './aged-care-register.csv';
+const NDIS_CSV  = './ndis-register.csv';
 
 // Org-name patterns to exclude from NDIS results (companies, not individuals)
 const ORG_RE = /pty\.?\s*ltd|(?:^|\s)pty(?:\s|$)|t\/a|\btrust\b|\binc\.?\b|\bltd\.?\b/i;
@@ -360,8 +362,6 @@ let results      = [];   // { employee, acqscMatches, ndisMatches }
 let runAt        = null;
 let acqscFetchAt = null;
 let ndisFetchAt  = null;
-let acqscProxy   = null;
-let ndisProxy    = null;
 
 // ─── DOM ──────────────────────────────────────────────────────────────────────
 const uploadArea     = document.getElementById('uploadArea');
@@ -379,12 +379,10 @@ const downloadBtn    = document.getElementById('downloadBtn');
 
 // ─── Security: clear all data on page unload ──────────────────────────────────
 window.addEventListener('beforeunload', () => {
-  employees  = [];
-  acqscRows  = [];
-  ndisRows   = [];
-  results    = [];
-  acqscProxy = null;
-  ndisProxy  = null;
+  employees = [];
+  acqscRows = [];
+  ndisRows  = [];
+  results   = [];
 });
 
 // ─── File upload ──────────────────────────────────────────────────────────────
@@ -509,8 +507,8 @@ runBtn.addEventListener('click', runCheck);
 
 async function runCheck() {
   runBtn.disabled = true;
-  runBtn.innerHTML = '<span class="spinner"></span> Fetching registers…';
-  showStatus('Fetching the ACQSC and NDIS registers (discovering download links and trying up to 3 proxies)…', false);
+  runBtn.innerHTML = '<span class="spinner"></span> Loading registers…';
+  showStatus('Loading ACQSC and NDIS register data…', false);
 
   const [acqscResult, ndisResult] = await Promise.allSettled([fetchAcqsc(), fetchNdis()]);
 
@@ -518,7 +516,7 @@ async function runCheck() {
     const msgs = [];
     if (acqscResult.status === 'rejected') msgs.push(acqscResult.reason.message);
     if (ndisResult.status  === 'rejected') msgs.push(ndisResult.reason.message);
-    showStatus(msgs.join('<br><br>'), true, true);
+    showStatus(msgs.join(' | '), true);
     runBtn.innerHTML = 'Run Check';
     runBtn.disabled  = false;
     return;
@@ -529,10 +527,8 @@ async function runCheck() {
 
   acqscRows    = acqsc.rows;
   acqscFetchAt = acqsc.fetchedAt;
-  acqscProxy   = acqsc.proxyName;
   ndisRows     = ndis.rows;
   ndisFetchAt  = ndis.fetchedAt;
-  ndisProxy    = ndis.proxyName;
 
   showStatus(
     `Registers loaded — ${acqscRows.length} aged care entries, ` +
@@ -556,94 +552,31 @@ async function runCheck() {
 // ─── Register fetches ─────────────────────────────────────────────────────────
 
 async function fetchAcqsc() {
-  const matcher = href => /\.csv$/i.test(href) || (/banning/i.test(href) && /csv/i.test(href));
-  let discovered;
-  try {
-    discovered = await discoverCsvUrl(ACQSC_DISCOVERY, 'ACQSC', matcher);
-  } catch (_) {
-    throw new Error(
-      'The Aged Care register could not be fetched. The download link may have changed — visit ' +
-      '<a href="' + ACQSC_DISCOVERY + '" target="_blank" rel="noopener">this page</a> ' +
-      'to find the current CSV link and contact your administrator to update the tool.'
-    );
+  const resp = await fetch(ACQSC_CSV);
+  if (resp.status === 404) {
+    throw new Error('Register file not found. Please ensure aged-care-register.csv and ndis-register.csv are present in the repository.');
   }
-  if (!discovered.url) {
-    throw new Error(
-      'The Aged Care register could not be fetched. The download link may have changed — visit ' +
-      '<a href="' + ACQSC_DISCOVERY + '" target="_blank" rel="noopener">this page</a> ' +
-      'to find the current CSV link and contact your administrator to update the tool.'
-    );
-  }
-  const { text, proxyName } = await fetchViaProxy(discovered.url, 'ACQSC');
+  if (!resp.ok) throw new Error(`Could not load aged-care-register.csv (HTTP ${resp.status})`);
+  const text = await resp.text();
   const { data } = parseCsv(text, 'ACQSC');
   return {
     rows:      data.map(normaliseAcqscRow).filter(r => r.name),
-    fetchedAt: new Date(),
-    proxyName
+    fetchedAt: new Date()
   };
 }
 
 async function fetchNdis() {
-  const matcher = href => /\.csv$/i.test(href) || (/download/i.test(href) && /csv/i.test(href));
-  let discovered;
-  try {
-    discovered = await discoverCsvUrl(NDIS_DISCOVERY, 'NDIS', matcher);
-  } catch (_) {
-    throw new Error(
-      'The NDIS register could not be fetched. The download link may have changed — visit ' +
-      '<a href="' + NDIS_DISCOVERY + '" target="_blank" rel="noopener">this page</a> ' +
-      'to find the current CSV link and contact your administrator to update the tool.'
-    );
+  const resp = await fetch(NDIS_CSV);
+  if (resp.status === 404) {
+    throw new Error('Register file not found. Please ensure aged-care-register.csv and ndis-register.csv are present in the repository.');
   }
-  if (!discovered.url) {
-    throw new Error(
-      'The NDIS register could not be fetched. The download link may have changed — visit ' +
-      '<a href="' + NDIS_DISCOVERY + '" target="_blank" rel="noopener">this page</a> ' +
-      'to find the current CSV link and contact your administrator to update the tool.'
-    );
-  }
-  const { text, proxyName } = await fetchViaProxy(discovered.url, 'NDIS');
+  if (!resp.ok) throw new Error(`Could not load ndis-register.csv (HTTP ${resp.status})`);
+  const text = await resp.text();
   const { data } = parseCsv(text, 'NDIS');
   return {
     rows:      data.filter(isActiveNdisRow).map(normaliseNdisRow).filter(r => r.name),
-    fetchedAt: new Date(),
-    proxyName
+    fetchedAt: new Date()
   };
-}
-
-async function discoverCsvUrl(discoveryPageUrl, label, matcher) {
-  const { text } = await fetchViaProxy(discoveryPageUrl, `${label} discovery`);
-  const doc = new DOMParser().parseFromString(text, 'text/html');
-  for (const a of doc.querySelectorAll('a[href]')) {
-    const href = (a.getAttribute('href') || '').trim();
-    if (href && matcher(href)) {
-      return { url: new URL(href, discoveryPageUrl).href };
-    }
-  }
-  return { url: null };
-}
-
-async function fetchViaProxy(url, label) {
-  let lastErr;
-  for (let i = 0; i < PROXIES.length; i++) {
-    const proxyUrl = PROXIES[i](url);
-    try {
-      const resp = await fetch(proxyUrl, { cache: 'no-store' });
-      if (!resp.ok) {
-        lastErr = new Error(`${label} proxy ${i + 1} returned HTTP ${resp.status}`);
-        continue;
-      }
-      const text = await resp.text();
-      if (!text || text.trim().length < 20) {
-        lastErr = new Error(`${label} proxy ${i + 1} returned an empty response`);
-        continue;
-      }
-      return { text, proxyName: PROXY_NAMES[i] };
-    } catch (err) {
-      lastErr = new Error(`${label} proxy ${i + 1} failed — ${err.message}`);
-    }
-  }
-  throw new Error(`${label} could not be fetched (all proxies failed). Please check your internet connection and try again.`);
 }
 
 function parseCsv(text, label) {
@@ -796,8 +729,8 @@ function renderResults() {
   auditBar.innerHTML =
     `<strong>Check run:</strong> ${dtStr(runAt)} &nbsp;&bull;&nbsp; ` +
     `<strong>Employees checked:</strong> ${employees.length} &nbsp;&bull;&nbsp; ` +
-    `<strong>Aged Care register:</strong> ${acqscRows.length} entries fetched ${acqscFetchAt ? dtStr(acqscFetchAt) : ''}${acqscProxy ? ' via ' + esc(acqscProxy) : ''} &nbsp;&bull;&nbsp; ` +
-    `<strong>NDIS register:</strong> ${ndisRows.length} active individual entries fetched ${ndisFetchAt ? dtStr(ndisFetchAt) : ''}${ndisProxy ? ' via ' + esc(ndisProxy) : ''}`;
+    `<strong>Aged Care register:</strong> ${acqscRows.length} entries &nbsp;&bull;&nbsp; ` +
+    `<strong>NDIS register:</strong> ${ndisRows.length} active individual entries`;
 
   // Stats (5 tiles)
   statsGrid.innerHTML = [
@@ -1078,14 +1011,38 @@ function fileDate(d) {
   return `${y}-${mo}-${dd}`;
 }
 
-function showStatus(msg, isError, isHtml) {
-  if (isHtml) {
-    statusMsg.innerHTML = msg;
-  } else {
-    statusMsg.textContent = msg;
-  }
-  statusMsg.className = 'status-msg ' + (isError ? 'error' : 'info');
+function showStatus(msg, isError) {
+  statusMsg.textContent = msg;
+  statusMsg.className   = 'status-msg ' + (isError ? 'error' : 'info');
 }
+
+// ─── Register last-updated dates ──────────────────────────────────────────────
+
+async function getLastModified(url) {
+  try {
+    const resp = await fetch(url, { method: 'HEAD' });
+    const lm = resp.headers.get('Last-Modified');
+    return lm ? new Date(lm) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function loadRegisterDates() {
+  const el = document.getElementById('registerDates');
+  if (!el) return;
+  const [acqscDate, ndisDate] = await Promise.all([
+    getLastModified(ACQSC_CSV),
+    getLastModified(NDIS_CSV)
+  ]);
+  const fmt = d => d
+    ? d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
+    : 'unknown';
+  el.textContent =
+    `Register data last updated: Aged Care ${fmt(acqscDate)} · NDIS ${fmt(ndisDate)}`;
+}
+
+loadRegisterDates();
 
 function hideStatus() {
   statusMsg.className = 'status-msg';

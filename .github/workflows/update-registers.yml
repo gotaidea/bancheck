@@ -1,0 +1,100 @@
+name: Update Banning Register CSVs
+
+on:
+  schedule:
+    # 1am UTC on the 1st of each month = 11am AEST
+    - cron: '0 1 1 * *'
+  workflow_dispatch:
+    # Allow manual trigger from the Actions tab
+
+jobs:
+  update-registers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch ACQSC Aged Care register
+        id: acqsc
+        continue-on-error: true
+        run: |
+          # Write discovery script to a temp file (avoids shell quote escaping issues)
+          cat > /tmp/find_acqsc_url.py << 'PYEOF'
+          import urllib.request, re, sys
+
+          req = urllib.request.Request(
+              'https://www.agedcarequality.gov.au/providers/compliance-enforcement/banning-orders',
+              headers={'User-Agent': 'Mozilla/5.0 (compatible; register-updater/1.0)'}
+          )
+          try:
+              page = urllib.request.urlopen(req, timeout=30).read().decode('utf-8', errors='ignore')
+          except Exception as e:
+              print(f'ERROR fetching discovery page: {e}', file=sys.stderr)
+              sys.exit(1)
+
+          hrefs = re.findall(r"href=['\"]([^'\"]+)['\"]", page, re.IGNORECASE)
+          for href in hrefs:
+              h = href.lower()
+              if h.endswith('.csv') or ('banning' in h and 'csv' in h):
+                  if not href.startswith('http'):
+                      href = 'https://www.agedcarequality.gov.au' + href
+                  print(href)
+                  sys.exit(0)
+
+          print('No CSV link found on ACQSC discovery page', file=sys.stderr)
+          sys.exit(1)
+          PYEOF
+
+          CSV_URL=$(python3 /tmp/find_acqsc_url.py) \
+            || { echo "::error::Could not discover ACQSC CSV URL — check the discovery page manually"; exit 1; }
+
+          echo "Downloading ACQSC CSV from: $CSV_URL"
+          curl -sL --fail --retry 3 --retry-delay 5 "$CSV_URL" -o aged-care-register.csv
+
+          LINES=$(wc -l < aged-care-register.csv)
+          echo "ACQSC CSV: $LINES lines"
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::ACQSC CSV appears invalid ($LINES lines) — may be an error page"
+            exit 1
+          fi
+
+      - name: Fetch NDIS Commission register
+        id: ndis
+        continue-on-error: true
+        run: |
+          curl -sL --fail --retry 3 --retry-delay 5 \
+            "https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv" \
+            -o ndis-register.csv
+
+          LINES=$(wc -l < ndis-register.csv)
+          echo "NDIS CSV: $LINES lines"
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::NDIS CSV appears invalid ($LINES lines) — may be an error page"
+            exit 1
+          fi
+
+      - name: Commit updated CSVs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add whichever files exist (the other fetch may have failed)
+          git add aged-care-register.csv 2>/dev/null || true
+          git add ndis-register.csv 2>/dev/null || true
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit — registers are already up to date"
+          else
+            git commit -m "Auto-update: register CSVs $(date +'%Y-%m-%d')"
+            git push
+          fi
+
+      - name: Fail if any fetch failed
+        if: steps.acqsc.outcome == 'failure' || steps.ndis.outcome == 'failure'
+        run: |
+          echo "::error::One or more register fetches failed. Check the steps above for details."
+          echo "The People Team should be notified — registers may be out of date."
+          exit 1
