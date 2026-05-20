@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<!--
+  Aged Care & NDIS Banning Register Checker
+  ==========================================
+  Purpose  : Browser-based compliance tool for Dovida's People Team.
+             Checks employee names against two live Australian registers:
+               1. ACQSC Aged Care Banning Register
+               2. NDIS Quality & Safeguards Commission Banning Register
+  Registers:
+    ACQSC: https://www.agedcarequality.gov.au/media/94137
+    NDIS : https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv
+  Proxy  : Direct browser fetch is CORS-blocked; requests route through
+           https://api.allorigins.win/raw?url=
+  Update : Change ACQSC_URL or NDIS_URL in the <script> block below.
+  Security:
+    - CSP restricts scripts to self + cdnjs, connections to proxy + register
+      domains only, eval blocked, framing blocked
+    - No employee data written to localStorage, sessionStorage, URL, or console
+    - All in-memory data cleared on page unload
+  Deploy : Upload this single file to GitHub Pages — no build step needed.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP: scripts to self + cdnjs only, no eval, connect to proxy/registers only, no framing -->
+  <!-- Note: frame-ancestors only works via HTTP header, not meta tag; include for intent -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; connect-src https://api.allorigins.win https://www.agedcarequality.gov.au https://www.ndiscommission.gov.au; img-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'self'">
+  <title>Banning Register Checker — Dovida</title>
+  <!-- SRI hashes verify file integrity; crossorigin required for SRI to apply -->
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"
+    integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw"
+    crossorigin="anonymous"></script>
+  <script
+    src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"
+    integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs"
+    crossorigin="anonymous"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --purple:       #6B4E9B;
+      --purple-dark:  #56408a;
+      --purple-light: #9378c4;
+      --purple-bg:    #f3eefc;
+      --white:        #ffffff;
+      --grey:         #F5F5F5;
+      --grey-mid:     #d8d8d8;
+      --grey-dark:    #5c5c5c;
+      --text:         #1a1a1a;
+      --success:      #1e7a34;
+      --success-bg:   #edfaf1;
+      --danger:       #b91c1c;
+      --danger-bg:    #fef2f2;
+      --warn-bg:      #fffbeb;
+      --warn-border:  #d97706;
+      --info-bg:      #eff6ff;
+      --info-border:  #3b82f6;
+      --radius:       8px;
+      --shadow:       0 1px 4px rgba(0,0,0,0.09);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: var(--grey);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Header ──────────────────────────────────────────────── */
+    header {
+      background: var(--purple);
+      color: var(--white);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+    }
+    .logo-wrap { flex: 0 0 auto; }
+    .logo { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.5px; line-height: 1; }
+    .logo-tagline { font-size: 0.7rem; font-weight: 500; opacity: 0.75; letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px; }
+    .header-divider { width: 1px; height: 40px; background: rgba(255,255,255,0.3); }
+    .header-title { flex: 1; }
+    .header-title h1 { font-size: 1.05rem; font-weight: 700; line-height: 1.3; }
+    .header-title p  { font-size: 0.78rem; opacity: 0.75; margin-top: 2px; }
+
+    /* ── Main layout ─────────────────────────────────────────── */
+    main { max-width: 880px; margin: 0 auto; padding: 28px 16px 72px; }
+
+    /* ── Cards ───────────────────────────────────────────────── */
+    .card {
+      background: var(--white);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow);
+      border-left: 4px solid var(--purple);
+    }
+    .step-label { font-size: 0.7rem; font-weight: 700; color: var(--purple-light); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 3px; }
+    .card h2    { font-size: 1.05rem; font-weight: 700; margin-bottom: 14px; }
+
+    /* ── Data handling notice ────────────────────────────────── */
+    .data-notice {
+      background: var(--info-bg);
+      border: 1px solid var(--info-border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 0.82rem;
+      color: #1e40af;
+      margin-top: 16px;
+    }
+
+    /* ── Upload area ─────────────────────────────────────────── */
+    .upload-area {
+      border: 2px dashed var(--grey-mid);
+      border-radius: var(--radius);
+      padding: 28px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.18s, background 0.18s;
+      user-select: none;
+    }
+    .upload-area:hover, .upload-area.drag-over { border-color: var(--purple); background: var(--purple-bg); }
+    .upload-area.loaded { border-color: var(--success); background: var(--success-bg); border-style: solid; }
+    .upload-icon { font-size: 2rem; line-height: 1; margin-bottom: 8px; }
+    .upload-area p { font-size: 0.88rem; color: var(--grey-dark); margin-top: 4px; }
+    .upload-area strong { color: var(--text); }
+    .upload-area code { background: var(--grey); border-radius: 4px; padding: 1px 5px; font-size: 0.82rem; }
+    #fileInput { display: none; }
+    .file-status { margin-top: 12px; font-size: 0.85rem; color: var(--grey-dark); }
+    .file-status.ok  { color: var(--success); font-weight: 600; }
+    .file-status.err { color: var(--danger);  font-weight: 600; }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 22px;
+      border-radius: var(--radius);
+      border: none;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+      text-decoration: none;
+      line-height: 1;
+    }
+    .btn-primary { background: var(--purple); color: var(--white); }
+    .btn-primary:hover:not(:disabled) { background: var(--purple-dark); }
+    .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-outline { background: var(--white); color: var(--purple); border: 2px solid var(--purple); }
+    .btn-outline:hover { background: var(--purple-bg); }
+
+    /* ── Status message ──────────────────────────────────────── */
+    .status-msg { margin-top: 14px; padding: 11px 15px; border-radius: var(--radius); font-size: 0.875rem; display: none; }
+    .status-msg.info  { display: block; background: var(--purple-bg); border: 1px solid var(--purple-light); color: var(--purple-dark); }
+    .status-msg.error { display: block; background: var(--danger-bg); border: 1px solid #f87171; color: var(--danger); }
+
+    /* ── Spinner ─────────────────────────────────────────────── */
+    .spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: spin 0.65s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Results ─────────────────────────────────────────────── */
+    .audit-bar { background: var(--grey); border-radius: var(--radius); padding: 11px 16px; font-size: 0.8rem; color: var(--grey-dark); margin-bottom: 20px; line-height: 1.8; }
+    .audit-bar strong { color: var(--text); }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat { background: var(--grey); border-radius: var(--radius); padding: 14px 8px; text-align: center; }
+    .stat-num { font-size: 1.8rem; font-weight: 800; color: var(--purple); line-height: 1; }
+    .stat-num.danger { color: var(--danger); }
+    .stat-num.ok     { color: var(--success); }
+    .stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--grey-dark); margin-top: 4px; }
+
+    /* ── Section headers ─────────────────────────────────────── */
+    .sec-head { display: flex; align-items: center; gap: 10px; margin: 20px 0 12px; }
+    .sec-title { font-size: 0.95rem; font-weight: 700; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 100px; font-size: 0.75rem; font-weight: 700; }
+    .badge-danger  { background: #fee2e2; color: var(--danger); }
+    .badge-ok      { background: #dcfce7; color: var(--success); }
+    .badge-both    { background: #fef3c7; color: #92400e; }
+    .badge-acqsc   { background: #ede9fe; color: #5b21b6; }
+    .badge-ndis    { background: #dbeafe; color: #1e40af; }
+
+    /* ── Flagged cards ───────────────────────────────────────── */
+    .flagged-card {
+      background: var(--danger-bg);
+      border: 1px solid #fca5a5;
+      border-left: 4px solid var(--danger);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      margin-bottom: 14px;
+    }
+    .emp-name { font-size: 1rem; font-weight: 700; color: var(--danger); }
+    .emp-meta { display: flex; align-items: center; gap: 10px; margin: 3px 0 12px; flex-wrap: wrap; }
+    .emp-location { font-size: 0.82rem; color: var(--grey-dark); }
+
+    .register-section { margin-bottom: 10px; }
+    .register-section:last-child { margin-bottom: 0; }
+    .register-heading { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px; padding: 2px 8px; border-radius: 4px; display: inline-block; }
+    .rh-acqsc { background: #ede9fe; color: #5b21b6; }
+    .rh-ndis  { background: #dbeafe; color: #1e40af; }
+
+    .match-card { background: var(--white); border: 1px solid var(--grey-mid); border-radius: 6px; padding: 12px 14px; margin-bottom: 8px; }
+    .match-card:last-child { margin-bottom: 0; }
+    .match-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+    .match-name  { font-weight: 700; font-size: 0.92rem; }
+    .score-pill  { flex-shrink: 0; font-size: 0.72rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; background: #fee2e2; color: var(--danger); }
+    .match-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 3px 14px; font-size: 0.82rem; }
+    .mf { color: var(--grey-dark); }
+    .mf span { color: var(--text); font-weight: 500; }
+
+    /* ── Clear list ──────────────────────────────────────────── */
+    .clear-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(195px, 1fr)); gap: 8px; }
+    .clear-item { background: var(--grey); border-radius: 6px; padding: 9px 13px; font-size: 0.85rem; }
+    .ci-name { font-weight: 600; }
+    .ci-loc  { font-size: 0.78rem; color: var(--grey-dark); margin-top: 1px; }
+
+    /* ── Disclaimer ──────────────────────────────────────────── */
+    .disclaimer {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      border-left: 4px solid var(--warn-border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      font-size: 0.86rem;
+      font-weight: 600;
+      color: #78350f;
+      margin-top: 24px;
+    }
+
+    /* ── Action row ──────────────────────────────────────────── */
+    .action-row { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+
+    /* ── Footer ──────────────────────────────────────────────── */
+    footer { background: var(--white); border-top: 1px solid var(--grey-mid); padding: 16px 32px; text-align: center; font-size: 0.78rem; color: var(--grey-dark); }
+    footer a { color: var(--purple); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* ── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      header { flex-wrap: wrap; gap: 12px; }
+      .header-divider { display: none; }
+      .card { padding: 20px 16px; }
+      .stats-grid { grid-template-columns: repeat(3, 1fr); }
+      .action-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-wrap">
+    <div class="logo">Dovida</div>
+    <div class="logo-tagline">People &amp; Culture</div>
+  </div>
+  <div class="header-divider"></div>
+  <div class="header-title">
+    <h1>Aged Care &amp; NDIS Banning Register Checker</h1>
+    <p>Checks against ACQSC and NDIS Commission registers &mdash; no data stored, runs in your browser</p>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Step 1: Upload ─────────────────────────────────────── -->
+  <div class="card">
+    <div class="step-label">Step 1</div>
+    <h2>Upload Employee List</h2>
+
+    <div class="upload-area" id="uploadArea">
+      <div class="upload-icon">📄</div>
+      <p><strong>Click to choose file</strong> &nbsp;or drag &amp; drop here</p>
+      <p>Accepts CSV or Excel &nbsp;&bull;&nbsp; Required columns:
+        <code>Location</code>&thinsp; <code>First Name</code>&thinsp; <code>Last Name</code></p>
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
+    </div>
+
+    <div class="file-status" id="fileStatus">No file selected.</div>
+
+    <div class="data-notice">
+      &#128274; <strong>Data handling:</strong> Employee names are processed locally in your browser.
+      No data is transmitted to any server or stored anywhere.
+    </div>
+  </div>
+
+  <!-- ── Step 2: Run check ──────────────────────────────────── -->
+  <div class="card">
+    <div class="step-label">Step 2</div>
+    <h2>Run Compliance Check</h2>
+    <p style="font-size:.88rem;color:var(--grey-dark);margin-bottom:16px">
+      Fetches both the ACQSC Aged Care Register and NDIS Commission Register live,
+      then checks each employee name against both. No employee data leaves your browser.
+    </p>
+    <button class="btn btn-primary" id="runBtn" disabled>Run Check</button>
+    <div class="status-msg" id="statusMsg"></div>
+  </div>
+
+  <!-- ── Step 3: Results ────────────────────────────────────── -->
+  <div class="card" id="resultsCard" style="display:none">
+    <div class="step-label">Step 3</div>
+    <h2>Review Results</h2>
+
+    <div class="audit-bar" id="auditBar"></div>
+
+    <div class="stats-grid" id="statsGrid"></div>
+
+    <div id="flaggedSection"></div>
+    <div id="clearSection"></div>
+
+    <div class="disclaimer">
+      &#9888;&#65039; All flagged results require manual verification before any employment action is taken.
+      This tool does not replace formal compliance processes.
+    </div>
+
+    <div class="action-row">
+      <button class="btn btn-primary" id="emailBtn">&#9993; Email Report</button>
+      <button class="btn btn-outline" id="downloadBtn">&#8595; Download CSV</button>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  Data sources:
+  <a href="https://www.agedcarequality.gov.au/providers/compliance-enforcement/banning-orders"
+    target="_blank" rel="noopener">ACQSC Banning Register</a>
+  &nbsp;&bull;&nbsp;
+  <a href="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions"
+    target="_blank" rel="noopener">NDIS Commission Register</a>
+  &nbsp;&bull;&nbsp; For compliance use by Dovida People &amp; Culture only
+  &nbsp;&bull;&nbsp; All processing occurs client-side in your browser
+</footer>
+
+<script>
+// ─── Configuration ────────────────────────────────────────────────────────────
+const ACQSC_URL = 'https://www.agedcarequality.gov.au/media/94137';
+const NDIS_URL  = 'https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv';
+const PROXY     = 'https://api.allorigins.win/raw?url=';
+
+// Org-name patterns to exclude from NDIS results (companies, not individuals)
+const ORG_RE = /pty\.?\s*ltd|(?:^|\s)pty(?:\s|$)|t\/a|\btrust\b|\binc\.?\b|\bltd\.?\b/i;
+
+// ─── Application state ────────────────────────────────────────────────────────
+let employees    = [];   // { location, firstName, lastName, fullName }
+let acqscRows    = [];   // normalised ACQSC register entries
+let ndisRows     = [];   // normalised active individual NDIS entries
+let results      = [];   // { employee, acqscMatches, ndisMatches }
+let runAt        = null;
+let acqscFetchAt = null;
+let ndisFetchAt  = null;
+
+// ─── DOM ──────────────────────────────────────────────────────────────────────
+const uploadArea     = document.getElementById('uploadArea');
+const fileInput      = document.getElementById('fileInput');
+const fileStatus     = document.getElementById('fileStatus');
+const runBtn         = document.getElementById('runBtn');
+const statusMsg      = document.getElementById('statusMsg');
+const resultsCard    = document.getElementById('resultsCard');
+const auditBar       = document.getElementById('auditBar');
+const statsGrid      = document.getElementById('statsGrid');
+const flaggedSection = document.getElementById('flaggedSection');
+const clearSection   = document.getElementById('clearSection');
+const emailBtn       = document.getElementById('emailBtn');
+const downloadBtn    = document.getElementById('downloadBtn');
+
+// ─── Security: clear all data on page unload ──────────────────────────────────
+window.addEventListener('beforeunload', () => {
+  employees = [];
+  acqscRows = [];
+  ndisRows  = [];
+  results   = [];
+});
+
+// ─── File upload ──────────────────────────────────────────────────────────────
+uploadArea.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+uploadArea.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadArea.classList.add('drag-over');
+});
+
+['dragleave', 'dragend'].forEach(ev =>
+  uploadArea.addEventListener(ev, () => uploadArea.classList.remove('drag-over'))
+);
+
+uploadArea.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadArea.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+function handleFile(file) {
+  const name = file.name || '';
+  const ext  = name.split('.').pop().toLowerCase();
+
+  // Validate file type explicitly before processing
+  if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+    setFileError(`"${name}" is not a supported file type. Please upload a .csv, .xlsx or .xls file.`);
+    return;
+  }
+
+  // Additional MIME-type sanity check for CSV
+  if (ext === 'csv' && file.type && !file.type.includes('text') && !file.type.includes('csv') && file.type !== 'application/octet-stream') {
+    setFileError('File does not appear to be a valid CSV. Please check the file and try again.');
+    return;
+  }
+
+  if (ext === 'csv') {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: ({ data }) => loadEmployees(data, name),
+      error: err => setFileError('Could not parse CSV: ' + err.message)
+    });
+  } else {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb   = XLSX.read(e.target.result, { type: 'array' });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        loadEmployees(data, name);
+      } catch (err) {
+        setFileError('Could not read Excel file: ' + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+function loadEmployees(rows, filename) {
+  if (!rows || rows.length === 0) {
+    setFileError('The file appears to be empty.');
+    return;
+  }
+
+  const colFor = (...names) => {
+    const raw = Object.keys(rows[0]);
+    for (const n of names) {
+      const found = raw.find(k => k.trim().toLowerCase() === n.toLowerCase());
+      if (found) return found;
+    }
+    return null;
+  };
+
+  const locCol = colFor('location', 'office', 'site', 'branch');
+  const fnCol  = colFor('first name', 'firstname', 'given name', 'givenname');
+  const lnCol  = colFor('last name', 'lastname', 'surname', 'family name', 'familyname');
+
+  if (!fnCol || !lnCol) {
+    const found = Object.keys(rows[0]).map(k => k.trim()).join(', ');
+    setFileError(`Could not find required columns. Found: ${found}. Expected "First Name" and "Last Name" (case-insensitive).`);
+    return;
+  }
+
+  employees = rows
+    .map(r => {
+      const fn = strip(r[fnCol]);
+      const ln = strip(r[lnCol]);
+      return {
+        location:  locCol ? strip(r[locCol]) : '',
+        firstName: fn,
+        lastName:  ln,
+        fullName:  [fn, ln].filter(Boolean).join(' ')
+      };
+    })
+    .filter(e => e.firstName || e.lastName);
+
+  if (employees.length === 0) {
+    setFileError('No employee rows found after parsing.');
+    return;
+  }
+
+  uploadArea.classList.add('loaded');
+  fileStatus.textContent = `✓ ${employees.length} employee${employees.length !== 1 ? 's' : ''} loaded from “${filename}”`;
+  fileStatus.className = 'file-status ok';
+  runBtn.disabled = false;
+  hideStatus();
+}
+
+function setFileError(msg) {
+  fileStatus.textContent = msg;
+  fileStatus.className   = 'file-status err';
+  runBtn.disabled = true;
+}
+
+// ─── Run check ────────────────────────────────────────────────────────────────
+runBtn.addEventListener('click', runCheck);
+
+async function runCheck() {
+  runBtn.disabled = true;
+  runBtn.innerHTML = '<span class="spinner"></span> Fetching registers…';
+  showStatus('Fetching the ACQSC and NDIS registers in parallel…', false);
+
+  try {
+    const [acqsc, ndis] = await Promise.all([fetchAcqsc(), fetchNdis()]);
+    acqscRows    = acqsc.rows;
+    acqscFetchAt = acqsc.fetchedAt;
+    ndisRows     = ndis.rows;
+    ndisFetchAt  = ndis.fetchedAt;
+  } catch (err) {
+    showStatus(
+      `Could not fetch a register: ${err.message}. ` +
+      `Please check your internet connection and try again.`,
+      true
+    );
+    runBtn.innerHTML = 'Run Check';
+    runBtn.disabled  = false;
+    return;
+  }
+
+  showStatus(
+    `Registers loaded — ${acqscRows.length} aged care entries, ` +
+    `${ndisRows.length} NDIS entries. Running checks…`,
+    false
+  );
+
+  runAt   = new Date();
+  results = employees.map(emp => ({
+    employee:     emp,
+    acqscMatches: matchEmployee(emp, acqscRows),
+    ndisMatches:  matchEmployee(emp, ndisRows)
+  }));
+
+  runBtn.innerHTML = 'Run Check';
+  runBtn.disabled  = false;
+  hideStatus();
+  renderResults();
+}
+
+// ─── Register fetches ─────────────────────────────────────────────────────────
+
+async function fetchAcqsc() {
+  const text = await fetchViaProxy(ACQSC_URL, 'ACQSC');
+  const { data } = parseCsv(text, 'ACQSC');
+  return {
+    rows:      data.map(normaliseAcqscRow).filter(r => r.name),
+    fetchedAt: new Date()
+  };
+}
+
+async function fetchNdis() {
+  const text = await fetchViaProxy(NDIS_URL, 'NDIS');
+  const { data } = parseCsv(text, 'NDIS');
+  return {
+    rows:      data.filter(isActiveNdisRow).map(normaliseNdisRow).filter(r => r.name),
+    fetchedAt: new Date()
+  };
+}
+
+async function fetchViaProxy(url, label) {
+  const proxyUrl = PROXY + encodeURIComponent(url);
+  let resp;
+  try {
+    resp = await fetch(proxyUrl, { cache: 'no-store' });
+  } catch (err) {
+    throw new Error(`${label} network request failed — ${err.message}`);
+  }
+  if (!resp.ok) throw new Error(`${label} proxy returned HTTP ${resp.status}`);
+  const text = await resp.text();
+  if (!text || text.trim().length < 20) throw new Error(`${label} proxy returned an empty response`);
+  return text;
+}
+
+function parseCsv(text, label) {
+  const result = Papa.parse(text.trim(), {
+    header:          true,
+    skipEmptyLines:  true,
+    transformHeader: h => h.trim()
+  });
+  if (!result.data || result.data.length === 0) {
+    throw new Error(`${label} register CSV contained no data rows`);
+  }
+  return result;
+}
+
+// ─── ACQSC register normalisation ────────────────────────────────────────────
+
+function normaliseAcqscRow(row) {
+  const keys = Object.keys(row);
+  function pick(...candidates) {
+    for (const c of candidates) {
+      const ex = keys.find(k => k.toLowerCase() === c.toLowerCase());
+      if (ex) return (row[ex] || '').trim();
+    }
+    for (const c of candidates) {
+      const pt = keys.find(k => k.toLowerCase().includes(c.toLowerCase()));
+      if (pt) return (row[pt] || '').trim();
+    }
+    return '';
+  }
+  return {
+    name:      pick('name', 'full name', "individual's name", 'individual name', 'person'),
+    suburb:    pick('suburb', 'city', 'town', 'locality'),
+    state:     pick('state/territory', 'state', 'territory'),
+    postcode:  pick('postcode', 'post code', 'postal code', 'zip'),
+    orderDate: pick('order date', 'date of order', 'date made', 'banning date', 'date'),
+    orderType: pick('order type', 'type of order', 'ban type', 'duration', 'type'),
+    reason:    pick('reason', 'grounds', 'basis', 'detail', 'condition', 'description')
+  };
+}
+
+// ─── NDIS register normalisation & filtering ─────────────────────────────────
+
+function isActiveNdisRow(row) {
+  // Only banning orders
+  const type = (row['Type'] || '').toLowerCase();
+  if (!type.includes('banning order')) return false;
+
+  // Exclude obvious organisations
+  const name = row['Name'] || '';
+  if (ORG_RE.test(name)) return false;
+
+  // Only currently active orders
+  const endDate = (row['Date no longer in force'] || '').trim();
+  if (endDate) {
+    try {
+      const d = new Date(endDate);
+      if (!isNaN(d.getTime()) && d <= new Date()) return false;
+    } catch (_) { /* keep if date unparseable */ }
+  }
+
+  return true;
+}
+
+function normaliseNdisRow(row) {
+  const v = k => (row[k] || '').trim();
+  return {
+    name:      v('Name'),
+    suburb:    v('City'),
+    state:     v('State'),
+    postcode:  v('Postcode'),
+    orderDate: v('Date effective from'),
+    orderType: v('Type'),
+    reason:    v('Relevant information'),
+    endDate:   v('Date no longer in force')
+  };
+}
+
+// ─── Matching logic ───────────────────────────────────────────────────────────
+
+// Lowercase, strip punctuation except apostrophes, collapse whitespace.
+function normName(s) {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[^\w\s']/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenise(s) {
+  return normName(s).split(' ').filter(Boolean);
+}
+
+function matchEmployee(emp, registerRows) {
+  const empFirst   = normName(emp.firstName);
+  const empLast    = normName(emp.lastName);
+  const empInitial = empFirst[0] || '';
+
+  if (!empLast) return [];
+
+  const hits = [];
+
+  for (const entry of registerRows) {
+    if (!entry.name) continue;
+
+    // Strip parenthetical alternative names: "Lynette Peters (Morgan)" → "Lynette Peters"
+    const cleanName = entry.name.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+    const tokens    = tokenise(cleanName);
+    if (tokens.length < 2) continue;
+
+    const regLast   = tokens[tokens.length - 1];
+    const regFirst  = tokens[0];
+    const regMiddle = tokens.slice(1, -1);
+
+    if (regLast !== empLast) continue;
+
+    let score = 0;
+
+    if (regFirst === empFirst) {
+      score = 1.0;
+    } else if (empInitial && regFirst[0] === empInitial) {
+      score = 0.75;
+    } else {
+      for (const mid of regMiddle) {
+        if (mid === empFirst) { score = 0.65; break; }
+        if (empInitial && mid[0] === empInitial) { score = 0.65; break; }
+      }
+    }
+
+    if (score >= 0.65) hits.push({ entry, score });
+  }
+
+  // Deduplicate by name+suburb, keep highest score
+  const seen = new Map();
+  for (const h of hits) {
+    const key = h.entry.name + '\x00' + h.entry.suburb;
+    const ex  = seen.get(key);
+    if (!ex || ex.score < h.score) seen.set(key, h);
+  }
+
+  return [...seen.values()].sort((a, b) => b.score - a.score);
+}
+
+// ─── Result rendering ─────────────────────────────────────────────────────────
+
+function renderResults() {
+  const flagged = results.filter(r => r.acqscMatches.length > 0 || r.ndisMatches.length > 0);
+  const clear   = results.filter(r => r.acqscMatches.length === 0 && r.ndisMatches.length === 0);
+
+  // Audit bar
+  auditBar.innerHTML =
+    `<strong>Check run:</strong> ${dtStr(runAt)} &nbsp;&bull;&nbsp; ` +
+    `<strong>Employees checked:</strong> ${employees.length} &nbsp;&bull;&nbsp; ` +
+    `<strong>Aged Care register:</strong> ${acqscRows.length} entries fetched ${acqscFetchAt ? dtStr(acqscFetchAt) : ''} &nbsp;&bull;&nbsp; ` +
+    `<strong>NDIS register:</strong> ${ndisRows.length} active individual entries fetched ${ndisFetchAt ? dtStr(ndisFetchAt) : ''}`;
+
+  // Stats (5 tiles)
+  statsGrid.innerHTML = [
+    makeStat(employees.length,  'Total Checked',    ''),
+    makeStat(flagged.length,    'Flagged',           'danger'),
+    makeStat(clear.length,      'Clear',             'ok'),
+    makeStat(acqscRows.length,  'Aged Care Entries', ''),
+    makeStat(ndisRows.length,   'NDIS Entries',      '')
+  ].join('');
+
+  // Flagged section
+  if (flagged.length > 0) {
+    flaggedSection.innerHTML =
+      `<div class="sec-head">
+        <div class="sec-title">Flagged Employees</div>
+        <span class="badge badge-danger">${flagged.length} flagged</span>
+      </div>` +
+      flagged.map(renderFlagged).join('');
+  } else {
+    flaggedSection.innerHTML =
+      `<div class="sec-head">
+        <div class="sec-title" style="color:var(--success)">
+          ✓ No employees matched either Banning Register
+        </div>
+      </div>`;
+  }
+
+  // Clear section
+  clearSection.innerHTML =
+    `<div class="sec-head" style="margin-top:24px">
+      <div class="sec-title">Clear Employees</div>
+      <span class="badge badge-ok">${clear.length} clear</span>
+    </div>
+    <div class="clear-grid">
+      ${clear.map(r =>
+        `<div class="clear-item">
+          <div class="ci-name">${esc(r.employee.fullName)}</div>
+          <div class="ci-loc">${esc(r.employee.location)}</div>
+        </div>`
+      ).join('')}
+    </div>`;
+
+  resultsCard.style.display = 'block';
+  resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function makeStat(num, label, cls) {
+  return `<div class="stat">
+    <div class="stat-num${cls ? ' ' + cls : ''}">${num}</div>
+    <div class="stat-label">${label}</div>
+  </div>`;
+}
+
+function registerLabel(r) {
+  const hasAcqsc = r.acqscMatches.length > 0;
+  const hasNdis  = r.ndisMatches.length  > 0;
+  if (hasAcqsc && hasNdis) return { text: 'Both Registers', cls: 'badge-both' };
+  if (hasAcqsc)            return { text: 'Aged Care Register', cls: 'badge-acqsc' };
+  return                          { text: 'NDIS Register', cls: 'badge-ndis' };
+}
+
+function renderFlagged(r) {
+  const emp   = r.employee;
+  const label = registerLabel(r);
+
+  const acqscHtml = r.acqscMatches.length > 0
+    ? `<div class="register-section">
+        <div class="register-heading rh-acqsc">Aged Care Register</div>
+        ${r.acqscMatches.map(m => renderMatchCard(m)).join('')}
+       </div>`
+    : '';
+
+  const ndisHtml = r.ndisMatches.length > 0
+    ? `<div class="register-section">
+        <div class="register-heading rh-ndis">NDIS Register</div>
+        ${r.ndisMatches.map(m => renderMatchCard(m)).join('')}
+       </div>`
+    : '';
+
+  return `<div class="flagged-card">
+    <div class="emp-name">⚑ ${esc(emp.fullName)}</div>
+    <div class="emp-meta">
+      <span class="emp-location">📍 ${esc(emp.location)}</span>
+      <span class="badge ${label.cls}">${label.text}</span>
+    </div>
+    ${acqscHtml}${ndisHtml}
+  </div>`;
+}
+
+function renderMatchCard(m) {
+  const e = m.entry;
+  const scoreLabel =
+    m.score >= 1.0  ? 'Full name match'    :
+    m.score >= 0.75 ? 'Initial name match' : 'Name variant';
+
+  const fields = [
+    e.suburb    && `<div class="mf">Suburb: <span>${esc(e.suburb)}</span></div>`,
+    e.state     && `<div class="mf">State: <span>${esc(e.state)}</span></div>`,
+    e.postcode  && `<div class="mf">Postcode: <span>${esc(e.postcode)}</span></div>`,
+    e.orderDate && `<div class="mf">Order date: <span>${esc(e.orderDate)}</span></div>`,
+    e.orderType && `<div class="mf">Order type: <span>${esc(e.orderType)}</span></div>`,
+    e.endDate   && `<div class="mf">Order ends: <span>${esc(e.endDate)}</span></div>`,
+    e.reason    && `<div class="mf">Reason: <span>${esc(e.reason)}</span></div>`
+  ].filter(Boolean).join('');
+
+  return `<div class="match-card">
+    <div class="match-header">
+      <div class="match-name">${esc(e.name)}</div>
+      <span class="score-pill">${scoreLabel}</span>
+    </div>
+    <div class="match-fields">${fields || '<div class="mf">No additional details available</div>'}</div>
+  </div>`;
+}
+
+// ─── Email report ─────────────────────────────────────────────────────────────
+emailBtn.addEventListener('click', () => {
+  const flagged = results.filter(r => r.acqscMatches.length > 0 || r.ndisMatches.length > 0);
+  const clear   = results.filter(r => r.acqscMatches.length === 0 && r.ndisMatches.length === 0);
+
+  const subject = `Aged Care & NDIS Banning Register Check — ${dateStr(runAt)}`;
+
+  let body = 'AGED CARE & NDIS BANNING REGISTER CHECK REPORT\n';
+  body    += '='.repeat(48) + '\n\n';
+  body    += `Date/time run:            ${dtStr(runAt)}\n`;
+  body    += `Employees checked:        ${employees.length}\n`;
+  body    += `Aged Care register:       ${acqscRows.length} entries (fetched ${acqscFetchAt ? dtStr(acqscFetchAt) : 'unknown'})\n`;
+  body    += `NDIS register:            ${ndisRows.length} active entries (fetched ${ndisFetchAt ? dtStr(ndisFetchAt) : 'unknown'})\n\n`;
+
+  body += 'SUMMARY\n' + '-'.repeat(20) + '\n';
+  body += `Flagged: ${flagged.length}\n`;
+  body += `Clear:   ${clear.length}\n\n`;
+
+  if (flagged.length > 0) {
+    // Aged Care flags
+    const acqscFlagged = flagged.filter(r => r.acqscMatches.length > 0);
+    if (acqscFlagged.length > 0) {
+      body += 'AGED CARE REGISTER MATCHES\n' + '-'.repeat(28) + '\n';
+      for (const r of acqscFlagged) {
+        body += `\n${r.employee.fullName} — ${r.employee.location}\n`;
+        for (const m of r.acqscMatches) {
+          body += formatMatchBody(m);
+        }
+      }
+      body += '\n';
+    }
+
+    // NDIS flags
+    const ndisFlagged = flagged.filter(r => r.ndisMatches.length > 0);
+    if (ndisFlagged.length > 0) {
+      body += 'NDIS REGISTER MATCHES\n' + '-'.repeat(22) + '\n';
+      for (const r of ndisFlagged) {
+        body += `\n${r.employee.fullName} — ${r.employee.location}\n`;
+        for (const m of r.ndisMatches) {
+          body += formatMatchBody(m);
+        }
+      }
+      body += '\n';
+    }
+  } else {
+    body += 'No employees matched either Banning Register.\n\n';
+  }
+
+  body += '='.repeat(48) + '\n';
+  body += 'Full results are available in the downloaded CSV.\n\n';
+  body += 'IMPORTANT: All flagged results require manual verification before any employment action is taken. This tool does not replace formal compliance processes.\n';
+
+  window.location.href =
+    'mailto:?subject=' + encodeURIComponent(subject) +
+    '&body='           + encodeURIComponent(body);
+});
+
+function formatMatchBody(m) {
+  const e = m.entry;
+  const label =
+    m.score >= 1.0  ? 'Full name match'    :
+    m.score >= 0.75 ? 'Initial name match' : 'Name variant';
+  let s = `  Match (${label}): ${e.name}\n`;
+  if (e.suburb)    s += `    Suburb:     ${e.suburb}\n`;
+  if (e.state)     s += `    State:      ${e.state}\n`;
+  if (e.postcode)  s += `    Postcode:   ${e.postcode}\n`;
+  if (e.orderDate) s += `    Order date: ${e.orderDate}\n`;
+  if (e.orderType) s += `    Order type: ${e.orderType}\n`;
+  if (e.endDate)   s += `    Order ends: ${e.endDate}\n`;
+  if (e.reason)    s += `    Reason:     ${e.reason}\n`;
+  return s;
+}
+
+// ─── CSV download ─────────────────────────────────────────────────────────────
+downloadBtn.addEventListener('click', () => {
+  const runDT      = dtStr(runAt);
+  const acqscFDT   = acqscFetchAt ? dtStr(acqscFetchAt) : '';
+  const ndisFDT    = ndisFetchAt  ? dtStr(ndisFetchAt)  : '';
+  const empCnt     = String(employees.length);
+  const acqscCnt   = String(acqscRows.length);
+  const ndisCnt    = String(ndisRows.length);
+
+  const headers = [
+    'Run date/time',
+    'Aged Care register fetched', 'Aged Care entries',
+    'NDIS register fetched',      'NDIS entries',
+    'Employees checked',
+    'Location', 'Employee name', 'Status', 'Register',
+    'Register match name', 'Suburb', 'State', 'Postcode',
+    'Order date', 'Order type', 'Order ends', 'Reason'
+  ];
+
+  const rows = [headers];
+
+  for (const r of results) {
+    const emp      = r.employee;
+    const isFlagged = r.acqscMatches.length > 0 || r.ndisMatches.length > 0;
+    const meta     = [runDT, acqscFDT, acqscCnt, ndisFDT, ndisCnt, empCnt];
+
+    if (!isFlagged) {
+      rows.push([...meta, emp.location, emp.fullName, 'Clear', '', '', '', '', '', '', '', '', '']);
+      continue;
+    }
+
+    // Aged care matches
+    for (const m of r.acqscMatches) {
+      const e = m.entry;
+      rows.push([...meta, emp.location, emp.fullName, 'FLAGGED', 'Aged Care Register',
+        e.name, e.suburb, e.state, e.postcode, e.orderDate, e.orderType, e.endDate || '', e.reason]);
+    }
+
+    // NDIS matches
+    for (const m of r.ndisMatches) {
+      const e = m.entry;
+      rows.push([...meta, emp.location, emp.fullName, 'FLAGGED', 'NDIS Register',
+        e.name, e.suburb, e.state, e.postcode, e.orderDate, e.orderType, e.endDate || '', e.reason]);
+    }
+  }
+
+  const csv  = Papa.unparse(rows);
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), {
+    href:     url,
+    download: `banning_register_check_${fileDate(runAt)}.csv`
+  });
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function strip(s) {
+  return (s || '').trim().replace(/[‘’]/g, "'");
+}
+
+function esc(s) {
+  return (s || '')
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;');
+}
+
+function dtStr(d) {
+  if (!d) return '';
+  return d.toLocaleString('en-AU', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+function dateStr(d) {
+  if (!d) return '';
+  return d.toLocaleDateString('en-AU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function fileDate(d) {
+  if (!d) return 'unknown';
+  const y  = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${dd}`;
+}
+
+function showStatus(msg, isError) {
+  statusMsg.textContent = msg;
+  statusMsg.className   = 'status-msg ' + (isError ? 'error' : 'info');
+}
+
+function hideStatus() {
+  statusMsg.className = 'status-msg';
+}
+</script>
+</body>
+</html>
