@@ -53,8 +53,7 @@ jobs:
             -G "https://app.scrapingbee.com/api/v1/" \
             --data-urlencode "api_key=${KEY}" \
             --data-urlencode "url=${URL}" \
-            --data-urlencode "premium_proxy=true" \
-            --data-urlencode "country_code=au")
+            --data-urlencode "stealth_proxy=true")
           CURL_EXIT=$?
           set -e
 
@@ -94,8 +93,7 @@ jobs:
             -G "https://app.scrapingbee.com/api/v1/" \
             --data-urlencode "api_key=${KEY}" \
             --data-urlencode "url=${URL}" \
-            --data-urlencode "premium_proxy=true" \
-            --data-urlencode "country_code=au")
+            --data-urlencode "stealth_proxy=true")
           CURL_EXIT=$?
           set -e
 
