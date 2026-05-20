@@ -21,15 +21,14 @@ jobs:
           KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
           if [ -z "$KEY" ]; then
-            echo "::error::Repository secret SCRAPINGBEE_API_KEY is not set. Add it under Settings → Secrets and variables → Actions."
+            echo "::error::Repository secret SCRAPINGBEE_API_KEY is not set."
             exit 1
           fi
-          # Detect whitespace in the secret (common paste issue)
           RAW_LEN=$(printf '%s' "$KEY" | wc -c)
           TRIM_LEN=$(printf '%s' "$KEY" | tr -d '[:space:]' | wc -c)
           echo "API key length raw=$RAW_LEN trimmed=$TRIM_LEN"
           if [ "$RAW_LEN" != "$TRIM_LEN" ]; then
-            echo "::warning::API key contains whitespace ($((RAW_LEN-TRIM_LEN)) chars). Workflow will strip it, but please re-save the secret without leading/trailing whitespace."
+            echo "::warning::API key has $((RAW_LEN-TRIM_LEN)) whitespace char(s). Workflow will strip; consider re-saving the secret cleanly."
           fi
 
       - name: Fetch ACQSC Aged Care register
@@ -38,41 +37,52 @@ jobs:
         env:
           KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
-          # Trim any stray whitespace from the secret (defensive)
           KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
-
           URL="https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
-          ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
-          echo "Target URL: $URL"
-          echo "Encoded length: ${#ENC}"
+          TMP=$(mktemp)
 
-          # Build URL using --data-urlencode for safety; -G converts to GET querystring
+          # render_js=false: don't try to render a CSV as HTML
+          # premium_proxy=true: residential IPs (gov sites block datacenter)
           set +e
           HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
-            -o aged-care-register.csv \
+            -o "$TMP" \
             -G "https://app.scrapingbee.com/api/v1/" \
             --data-urlencode "api_key=${KEY}" \
             --data-urlencode "url=${URL}" \
-            --data-urlencode "stealth_proxy=true")
+            --data-urlencode "render_js=false" \
+            --data-urlencode "premium_proxy=true")
           CURL_EXIT=$?
           set -e
 
-          echo "curl exit: $CURL_EXIT"
-          echo "ScrapingBee HTTP: $HTTP_CODE"
+          echo "curl exit: $CURL_EXIT, HTTP: $HTTP_CODE, bytes: $(wc -c < "$TMP")"
+
           if [ "$CURL_EXIT" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::ScrapingBee request failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE) for ACQSC"
+            echo "::error::ACQSC fetch failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE)"
             echo "--- Response preview ---"
-            head -c 1500 aged-care-register.csv || true
+            head -c 1500 "$TMP" || true
+            rm -f "$TMP"
             exit 1
           fi
 
-          LINES=$(wc -l < aged-care-register.csv)
-          echo "ACQSC CSV: $LINES lines"
-          if [ "$LINES" -lt 5 ]; then
-            echo "::error::ACQSC CSV looks invalid ($LINES lines)"
-            head -c 1500 aged-care-register.csv
+          # Reject obvious non-CSV (JSON error, HTML error page)
+          FIRST=$(head -c 1 "$TMP")
+          if [ "$FIRST" = "{" ] || [ "$FIRST" = "<" ]; then
+            echo "::error::ACQSC response is not CSV (first byte: '$FIRST')"
+            head -c 1500 "$TMP"
+            rm -f "$TMP"
             exit 1
           fi
+
+          LINES=$(wc -l < "$TMP")
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::ACQSC CSV too small ($LINES lines)"
+            head -c 1500 "$TMP"
+            rm -f "$TMP"
+            exit 1
+          fi
+
+          mv "$TMP" aged-care-register.csv
+          echo "ACQSC CSV saved: $LINES lines"
 
       - name: Fetch NDIS Commission register
         id: ndis
@@ -81,38 +91,48 @@ jobs:
           KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
           KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
-
           URL="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
-          ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
-          echo "Target URL: $URL"
-          echo "Encoded length: ${#ENC}"
+          TMP=$(mktemp)
 
           set +e
           HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
-            -o ndis-register.csv \
+            -o "$TMP" \
             -G "https://app.scrapingbee.com/api/v1/" \
             --data-urlencode "api_key=${KEY}" \
             --data-urlencode "url=${URL}" \
-            --data-urlencode "stealth_proxy=true")
+            --data-urlencode "render_js=false" \
+            --data-urlencode "premium_proxy=true")
           CURL_EXIT=$?
           set -e
 
-          echo "curl exit: $CURL_EXIT"
-          echo "ScrapingBee HTTP: $HTTP_CODE"
+          echo "curl exit: $CURL_EXIT, HTTP: $HTTP_CODE, bytes: $(wc -c < "$TMP")"
+
           if [ "$CURL_EXIT" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::ScrapingBee request failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE) for NDIS"
+            echo "::error::NDIS fetch failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE)"
             echo "--- Response preview ---"
-            head -c 1500 ndis-register.csv || true
+            head -c 1500 "$TMP" || true
+            rm -f "$TMP"
             exit 1
           fi
 
-          LINES=$(wc -l < ndis-register.csv)
-          echo "NDIS CSV: $LINES lines"
-          if [ "$LINES" -lt 5 ]; then
-            echo "::error::NDIS CSV looks invalid ($LINES lines)"
-            head -c 1500 ndis-register.csv
+          FIRST=$(head -c 1 "$TMP")
+          if [ "$FIRST" = "{" ] || [ "$FIRST" = "<" ]; then
+            echo "::error::NDIS response is not CSV (first byte: '$FIRST')"
+            head -c 1500 "$TMP"
+            rm -f "$TMP"
             exit 1
           fi
+
+          LINES=$(wc -l < "$TMP")
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::NDIS CSV too small ($LINES lines)"
+            head -c 1500 "$TMP"
+            rm -f "$TMP"
+            exit 1
+          fi
+
+          mv "$TMP" ndis-register.csv
+          echo "NDIS CSV saved: $LINES lines"
 
       - name: Commit updated CSVs
         run: |
@@ -120,7 +140,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add aged-care-register.csv ndis-register.csv 2>/dev/null || true
           if git diff --staged --quiet; then
-            echo "No changes to commit — registers are already up to date"
+            echo "No changes to commit"
           else
             git commit -m "Auto-update: register CSVs $(date +'%Y-%m-%d')"
             git push
@@ -129,5 +149,5 @@ jobs:
       - name: Fail if any fetch failed
         if: steps.acqsc.outcome == 'failure' || steps.ndis.outcome == 'failure'
         run: |
-          echo "::error::One or more register fetches failed. Check the steps above for details."
+          echo "::error::One or more register fetches failed. Check the steps above."
           exit 1
