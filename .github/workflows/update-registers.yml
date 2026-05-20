@@ -24,6 +24,13 @@ jobs:
             echo "::error::Repository secret SCRAPINGBEE_API_KEY is not set. Add it under Settings → Secrets and variables → Actions."
             exit 1
           fi
+          # Detect whitespace in the secret (common paste issue)
+          RAW_LEN=$(printf '%s' "$KEY" | wc -c)
+          TRIM_LEN=$(printf '%s' "$KEY" | tr -d '[:space:]' | wc -c)
+          echo "API key length raw=$RAW_LEN trimmed=$TRIM_LEN"
+          if [ "$RAW_LEN" != "$TRIM_LEN" ]; then
+            echo "::warning::API key contains whitespace ($((RAW_LEN-TRIM_LEN)) chars). Workflow will strip it, but please re-save the secret without leading/trailing whitespace."
+          fi
 
       - name: Fetch ACQSC Aged Care register
         id: acqsc
@@ -31,18 +38,32 @@ jobs:
         env:
           KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
+          # Trim any stray whitespace from the secret (defensive)
+          KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
+
           URL="https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
           ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
+          echo "Target URL: $URL"
+          echo "Encoded length: ${#ENC}"
 
+          # Build URL using --data-urlencode for safety; -G converts to GET querystring
+          set +e
           HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
             -o aged-care-register.csv \
-            "https://app.scrapingbee.com/api/v1/?api_key=${KEY}&url=${ENC}&premium_proxy=true&country_code=au")
+            -G "https://app.scrapingbee.com/api/v1/" \
+            --data-urlencode "api_key=${KEY}" \
+            --data-urlencode "url=${URL}" \
+            --data-urlencode "premium_proxy=true" \
+            --data-urlencode "country_code=au")
+          CURL_EXIT=$?
+          set -e
 
+          echo "curl exit: $CURL_EXIT"
           echo "ScrapingBee HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::ScrapingBee returned HTTP $HTTP_CODE for ACQSC"
+          if [ "$CURL_EXIT" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::ScrapingBee request failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE) for ACQSC"
             echo "--- Response preview ---"
-            head -c 800 aged-care-register.csv
+            head -c 1500 aged-care-register.csv || true
             exit 1
           fi
 
@@ -50,7 +71,7 @@ jobs:
           echo "ACQSC CSV: $LINES lines"
           if [ "$LINES" -lt 5 ]; then
             echo "::error::ACQSC CSV looks invalid ($LINES lines)"
-            head -c 800 aged-care-register.csv
+            head -c 1500 aged-care-register.csv
             exit 1
           fi
 
@@ -60,18 +81,30 @@ jobs:
         env:
           KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
+          KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
+
           URL="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
           ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$URL")
+          echo "Target URL: $URL"
+          echo "Encoded length: ${#ENC}"
 
+          set +e
           HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
             -o ndis-register.csv \
-            "https://app.scrapingbee.com/api/v1/?api_key=${KEY}&url=${ENC}&premium_proxy=true&country_code=au")
+            -G "https://app.scrapingbee.com/api/v1/" \
+            --data-urlencode "api_key=${KEY}" \
+            --data-urlencode "url=${URL}" \
+            --data-urlencode "premium_proxy=true" \
+            --data-urlencode "country_code=au")
+          CURL_EXIT=$?
+          set -e
 
+          echo "curl exit: $CURL_EXIT"
           echo "ScrapingBee HTTP: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::ScrapingBee returned HTTP $HTTP_CODE for NDIS"
+          if [ "$CURL_EXIT" != "0" ] || [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::ScrapingBee request failed (curl=$CURL_EXIT, HTTP=$HTTP_CODE) for NDIS"
             echo "--- Response preview ---"
-            head -c 800 ndis-register.csv
+            head -c 1500 ndis-register.csv || true
             exit 1
           fi
 
@@ -79,7 +112,7 @@ jobs:
           echo "NDIS CSV: $LINES lines"
           if [ "$LINES" -lt 5 ]; then
             echo "::error::NDIS CSV looks invalid ($LINES lines)"
-            head -c 800 ndis-register.csv
+            head -c 1500 ndis-register.csv
             exit 1
           fi
 
