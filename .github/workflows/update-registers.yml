@@ -21,43 +21,19 @@ jobs:
         id: acqsc
         continue-on-error: true
         run: |
-          # Write discovery script to a temp file (avoids shell quote escaping issues)
-          cat > /tmp/find_acqsc_url.py << 'PYEOF'
-          import urllib.request, re, sys
+          # Known stable URL for the ACQSC banning register CSV
+          ACQSC_URL="https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
 
-          req = urllib.request.Request(
-              'https://www.agedcarequality.gov.au/providers/compliance-enforcement/banning-orders',
-              headers={'User-Agent': 'Mozilla/5.0 (compatible; register-updater/1.0)'}
-          )
-          try:
-              page = urllib.request.urlopen(req, timeout=30).read().decode('utf-8', errors='ignore')
-          except Exception as e:
-              print(f'ERROR fetching discovery page: {e}', file=sys.stderr)
-              sys.exit(1)
-
-          hrefs = re.findall(r"href=['\"]([^'\"]+)['\"]", page, re.IGNORECASE)
-          for href in hrefs:
-              h = href.lower()
-              if h.endswith('.csv') or ('banning' in h and 'csv' in h):
-                  if not href.startswith('http'):
-                      href = 'https://www.agedcarequality.gov.au' + href
-                  print(href)
-                  sys.exit(0)
-
-          print('No CSV link found on ACQSC discovery page', file=sys.stderr)
-          sys.exit(1)
-          PYEOF
-
-          CSV_URL=$(python3 /tmp/find_acqsc_url.py) \
-            || { echo "::error::Could not discover ACQSC CSV URL — check the discovery page manually"; exit 1; }
-
-          echo "Downloading ACQSC CSV from: $CSV_URL"
-          curl -sL --fail --retry 3 --retry-delay 5 "$CSV_URL" -o aged-care-register.csv
+          echo "Downloading ACQSC CSV from: $ACQSC_URL"
+          curl -sL --fail --retry 3 --retry-delay 5 --http1.1 \
+            -H "User-Agent: Mozilla/5.0 (compatible; register-updater/1.0)" \
+            "$ACQSC_URL" -o aged-care-register.csv
 
           LINES=$(wc -l < aged-care-register.csv)
           echo "ACQSC CSV: $LINES lines"
           if [ "$LINES" -lt 5 ]; then
             echo "::error::ACQSC CSV appears invalid ($LINES lines) — may be an error page"
+            cat aged-care-register.csv
             exit 1
           fi
 
@@ -65,14 +41,18 @@ jobs:
         id: ndis
         continue-on-error: true
         run: |
-          curl -sL --fail --retry 3 --retry-delay 5 \
-            "https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv" \
-            -o ndis-register.csv
+          NDIS_URL="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
+
+          echo "Downloading NDIS CSV from: $NDIS_URL"
+          curl -sL --fail --retry 3 --retry-delay 5 --http1.1 \
+            -H "User-Agent: Mozilla/5.0 (compatible; register-updater/1.0)" \
+            "$NDIS_URL" -o ndis-register.csv
 
           LINES=$(wc -l < ndis-register.csv)
           echo "NDIS CSV: $LINES lines"
           if [ "$LINES" -lt 5 ]; then
             echo "::error::NDIS CSV appears invalid ($LINES lines) — may be an error page"
+            cat ndis-register.csv
             exit 1
           fi
 
@@ -96,5 +76,4 @@ jobs:
         if: steps.acqsc.outcome == 'failure' || steps.ndis.outcome == 'failure'
         run: |
           echo "::error::One or more register fetches failed. Check the steps above for details."
-          echo "The People Team should be notified — registers may be out of date."
           exit 1
