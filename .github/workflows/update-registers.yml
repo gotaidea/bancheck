@@ -2,8 +2,8 @@ name: Update Banning Register CSVs
 
 on:
   schedule:
-    # 1am UTC on the 1st of each month = 11am AEST
-    - cron: '0 1 1 * *'
+    # 1am UTC daily = 11am AEST
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -16,23 +16,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify API key secret is configured
-        env:
-          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::warning::SCRAPINGBEE_API_KEY not set. Direct fetch will be attempted; ScrapingBee fallback disabled."
-          fi
-
       - name: Fetch ACQSC Aged Care register
         id: acqsc
         continue-on-error: true
-        env:
-          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
-          KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
           URL="https://www.agedcarequality.gov.au/sites/default/files/media/register-banning-orders-data-file.csv"
-          REFERER="https://www.agedcarequality.gov.au/providers/non-compliance/banning-orders"
           TMP=$(mktemp)
 
           validate() {
@@ -45,8 +33,6 @@ jobs:
             return 0
           }
 
-          # --- Attempt 1: direct fetch with realistic browser fingerprint ---
-          echo "=== Attempt 1: direct fetch (Chrome browser fingerprint) ==="
           set +e
           HTTP_CODE=$(curl -sS -L --max-time 30 --compressed -w "%{http_code}" \
             -o "$TMP" \
@@ -54,7 +40,7 @@ jobs:
             -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
             -H "Accept-Language: en-AU,en-US;q=0.9,en;q=0.8" \
             -H "Accept-Encoding: gzip, deflate, br" \
-            -H "Referer: ${REFERER}" \
+            -H "Referer: https://www.agedcarequality.gov.au/providers/non-compliance/banning-orders" \
             -H "Sec-Fetch-Dest: document" \
             -H "Sec-Fetch-Mode: navigate" \
             -H "Sec-Fetch-Site: same-origin" \
@@ -63,46 +49,16 @@ jobs:
             "$URL")
           CURL_EXIT=$?
           set -e
-          echo "Direct: curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
+          echo "curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
 
           if [ "$CURL_EXIT" = "0" ] && [ "$HTTP_CODE" = "200" ] && validate "$TMP"; then
             LINES=$(wc -l < "$TMP")
             mv "$TMP" aged-care-register.csv
-            echo "Direct fetch succeeded ($LINES lines) — ScrapingBee not used"
-            exit 0
-          fi
-          echo "Direct fetch did not produce valid CSV; falling back to ScrapingBee"
-
-          if [ -z "$KEY" ]; then
-            echo "::error::Direct fetch failed and SCRAPINGBEE_API_KEY is not set — no fallback available"
-            head -c 1500 "$TMP" || true
-            rm -f "$TMP"
-            exit 1
-          fi
-
-          # --- Attempt 2: ScrapingBee ---
-          echo "=== Attempt 2: ScrapingBee (premium_proxy, no JS) ==="
-          set +e
-          HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
-            -o "$TMP" \
-            -G "https://app.scrapingbee.com/api/v1/" \
-            --data-urlencode "api_key=${KEY}" \
-            --data-urlencode "url=${URL}" \
-            --data-urlencode "render_js=false" \
-            --data-urlencode "premium_proxy=true")
-          CURL_EXIT=$?
-          set -e
-          echo "ScrapingBee: curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
-
-          if [ "$CURL_EXIT" = "0" ] && [ "$HTTP_CODE" = "200" ] && validate "$TMP"; then
-            LINES=$(wc -l < "$TMP")
-            mv "$TMP" aged-care-register.csv
-            echo "ScrapingBee succeeded ($LINES lines)"
+            echo "Fetch succeeded ($LINES lines)"
             exit 0
           fi
 
-          echo "::error::Both direct fetch and ScrapingBee failed for ACQSC"
-          echo "--- Final response preview ---"
+          echo "::error::ACQSC fetch failed (curl=$CURL_EXIT HTTP=$HTTP_CODE)"
           head -c 1500 "$TMP" || true
           rm -f "$TMP"
           exit 1
@@ -110,12 +66,8 @@ jobs:
       - name: Fetch NDIS Commission register
         id: ndis
         continue-on-error: true
-        env:
-          KEY: ${{ secrets.SCRAPINGBEE_API_KEY }}
         run: |
-          KEY=$(printf '%s' "$KEY" | tr -d '[:space:]')
           URL="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search/download-csv"
-          REFERER="https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search"
           TMP=$(mktemp)
 
           validate() {
@@ -128,7 +80,6 @@ jobs:
             return 0
           }
 
-          echo "=== Attempt 1: direct fetch (Chrome browser fingerprint) ==="
           set +e
           HTTP_CODE=$(curl -sS -L --max-time 30 --compressed -w "%{http_code}" \
             -o "$TMP" \
@@ -136,7 +87,7 @@ jobs:
             -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
             -H "Accept-Language: en-AU,en-US;q=0.9,en;q=0.8" \
             -H "Accept-Encoding: gzip, deflate, br" \
-            -H "Referer: ${REFERER}" \
+            -H "Referer: https://www.ndiscommission.gov.au/about-us/compliance-and-enforcement/compliance-actions/search" \
             -H "Sec-Fetch-Dest: document" \
             -H "Sec-Fetch-Mode: navigate" \
             -H "Sec-Fetch-Site: same-origin" \
@@ -145,45 +96,16 @@ jobs:
             "$URL")
           CURL_EXIT=$?
           set -e
-          echo "Direct: curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
+          echo "curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
 
           if [ "$CURL_EXIT" = "0" ] && [ "$HTTP_CODE" = "200" ] && validate "$TMP"; then
             LINES=$(wc -l < "$TMP")
             mv "$TMP" ndis-register.csv
-            echo "Direct fetch succeeded ($LINES lines) — ScrapingBee not used"
-            exit 0
-          fi
-          echo "Direct fetch did not produce valid CSV; falling back to ScrapingBee"
-
-          if [ -z "$KEY" ]; then
-            echo "::error::Direct fetch failed and SCRAPINGBEE_API_KEY is not set — no fallback available"
-            head -c 1500 "$TMP" || true
-            rm -f "$TMP"
-            exit 1
-          fi
-
-          echo "=== Attempt 2: ScrapingBee (premium_proxy, no JS) ==="
-          set +e
-          HTTP_CODE=$(curl -sS -L --max-time 180 -w "%{http_code}" \
-            -o "$TMP" \
-            -G "https://app.scrapingbee.com/api/v1/" \
-            --data-urlencode "api_key=${KEY}" \
-            --data-urlencode "url=${URL}" \
-            --data-urlencode "render_js=false" \
-            --data-urlencode "premium_proxy=true")
-          CURL_EXIT=$?
-          set -e
-          echo "ScrapingBee: curl=$CURL_EXIT HTTP=$HTTP_CODE bytes=$(wc -c < "$TMP")"
-
-          if [ "$CURL_EXIT" = "0" ] && [ "$HTTP_CODE" = "200" ] && validate "$TMP"; then
-            LINES=$(wc -l < "$TMP")
-            mv "$TMP" ndis-register.csv
-            echo "ScrapingBee succeeded ($LINES lines)"
+            echo "Fetch succeeded ($LINES lines)"
             exit 0
           fi
 
-          echo "::error::Both direct fetch and ScrapingBee failed for NDIS"
-          echo "--- Final response preview ---"
+          echo "::error::NDIS fetch failed (curl=$CURL_EXIT HTTP=$HTTP_CODE)"
           head -c 1500 "$TMP" || true
           rm -f "$TMP"
           exit 1
@@ -194,7 +116,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add aged-care-register.csv ndis-register.csv 2>/dev/null || true
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "No changes to commit — registers are already up to date"
           else
             git commit -m "Auto-update: register CSVs $(date +'%Y-%m-%d')"
             git push
