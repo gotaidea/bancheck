@@ -953,11 +953,11 @@ downloadBtn.addEventListener('click', () => {
 
   for (const r of results) {
     const emp       = r.employee;
-    const matches   = [...r.acqscMatches, ...r.ndisMatches];
-    const isFlagged = matches.length > 0;
-    const reason    = isFlagged
-      ? matches.map(m => m.entry.reason).filter(Boolean).join('; ')
-      : '';
+    const isFlagged = r.acqscMatches.length > 0 || r.ndisMatches.length > 0;
+    const reason    = [
+      ...r.acqscMatches.map(m => m.entry.reason).filter(Boolean).map(x => `Aged Care: ${x}`),
+      ...r.ndisMatches.map(m => m.entry.reason).filter(Boolean).map(x => `NDIS: ${x}`)
+    ].join('; ');
 
     rows.push([
       checkDate, acqscFD, ndisFD,
