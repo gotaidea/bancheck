@@ -933,48 +933,38 @@ emailBtn.addEventListener('click', () => {
 
 // ─── CSV download ─────────────────────────────────────────────────────────────
 downloadBtn.addEventListener('click', () => {
-  const runDT      = dtStr(runAt);
-  const acqscFDT   = acqscFetchAt ? dtStr(acqscFetchAt) : '';
-  const ndisFDT    = ndisFetchAt  ? dtStr(ndisFetchAt)  : '';
-  const empCnt     = String(employees.length);
-  const acqscCnt   = String(acqscRows.length);
-  const ndisCnt    = String(ndisRows.length);
+  const checkDate  = dateStr(runAt);
+  const nextDate   = dateStr(addMonths(runAt, 3));
+  const acqscFD    = acqscFetchAt ? dateStr(acqscFetchAt) : '';
+  const ndisFD     = ndisFetchAt  ? dateStr(ndisFetchAt)  : '';
 
   const headers = [
-    'Run date/time',
-    'Aged Care register fetched', 'Aged Care entries',
-    'NDIS register fetched',      'NDIS entries',
-    'Employees checked',
-    'Location', 'Employee name', 'Status', 'Register',
-    'Register match name', 'Suburb', 'State', 'Postcode',
-    'Order date', 'Order type', 'Order ends', 'Reason'
+    'Check Date',
+    'Date of Aged Care Banning Register File',
+    'Date of NDIS Compliance Export File',
+    'First Name',
+    'Last Name',
+    'Next check required date',
+    'Banned/Not Banned',
+    'Reason if banned'
   ];
 
   const rows = [headers];
 
   for (const r of results) {
-    const emp      = r.employee;
-    const isFlagged = r.acqscMatches.length > 0 || r.ndisMatches.length > 0;
-    const meta     = [runDT, acqscFDT, acqscCnt, ndisFDT, ndisCnt, empCnt];
+    const emp       = r.employee;
+    const matches   = [...r.acqscMatches, ...r.ndisMatches];
+    const isFlagged = matches.length > 0;
+    const reason    = isFlagged
+      ? matches.map(m => m.entry.reason).filter(Boolean).join('; ')
+      : '';
 
-    if (!isFlagged) {
-      rows.push([...meta, emp.location, emp.fullName, 'Clear', '', '', '', '', '', '', '', '', '']);
-      continue;
-    }
-
-    // Aged care matches
-    for (const m of r.acqscMatches) {
-      const e = m.entry;
-      rows.push([...meta, emp.location, emp.fullName, 'FLAGGED', 'Aged Care Register',
-        e.name, e.suburb, e.state, e.postcode, e.orderDate, e.orderType, e.endDate || '', e.reason]);
-    }
-
-    // NDIS matches
-    for (const m of r.ndisMatches) {
-      const e = m.entry;
-      rows.push([...meta, emp.location, emp.fullName, 'FLAGGED', 'NDIS Register',
-        e.name, e.suburb, e.state, e.postcode, e.orderDate, e.orderType, e.endDate || '', e.reason]);
-    }
+    rows.push([
+      checkDate, acqscFD, ndisFD,
+      emp.firstName, emp.lastName, nextDate,
+      isFlagged ? 'Banned' : 'Not Banned',
+      reason
+    ]);
   }
 
   const csv  = Papa.unparse(rows);
@@ -1009,6 +999,23 @@ function dtStr(d) {
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
+}
+
+function dateStr(d) {
+  if (!d || isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mo}/${d.getFullYear()}`;
+}
+
+function addMonths(d, n) {
+  if (!d) return null;
+  const r = new Date(d.getTime());
+  const day = r.getDate();
+  r.setMonth(r.getMonth() + n);
+  // Guard against month overflow (e.g. 31 Jan + 1 month → 3 Mar)
+  if (r.getDate() < day) r.setDate(0);
+  return r;
 }
 
 function dateLong(d) {
